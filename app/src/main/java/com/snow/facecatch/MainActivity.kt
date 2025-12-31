@@ -195,8 +195,9 @@ class MainActivity : AppCompatActivity() {
                                         val faceArea = face.boundingBox.width() * face.boundingBox.height()
                                         val totalArea = visualWidth * visualHeight
                                         val areaRatio = faceArea.toFloat() / totalArea.toFloat()
-                                        
-                                        if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10 && areaRatio > 0.1) {
+                                        println("faceArea:${faceArea},totalArea:${totalArea},areaRatio:${areaRatio}")
+
+                                        if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10 && areaRatio > 0.085) {
                                             val currentTime = System.currentTimeMillis()
                                             if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
                                                 // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
