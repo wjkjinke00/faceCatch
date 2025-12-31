@@ -32,6 +32,12 @@ import java.util.concurrent.ExecutionException
 import androidx.appcompat.app.AlertDialog
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.graphics.Rect
+import androidx.camera.core.ExperimentalGetImage
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Canvas
 
 class MainActivity : AppCompatActivity() {
     
@@ -49,6 +55,16 @@ class MainActivity : AppCompatActivity() {
     
     private val PREFS_NAME = "camera_settings"
     private val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
+    
+    private var isCapturing = false
+    private var lastCaptureTime = 0L
+    private val CAPTURE_COOLDOWN = 5000L // 5秒冷却时间
+    
+    // 用于裁剪的状态
+    private var latestFaceBoundingBox: RectF? = null
+    private var latestImageWidth = 0
+    private var latestImageHeight = 0
+    private var latestRotationDegrees = 0
     
     companion object {
         private const val TAG = "MainActivity"
@@ -161,6 +177,31 @@ class MainActivity : AppCompatActivity() {
                                     
                                     if (statusList.isEmpty()) {
                                         faceStatusTextView.text = "正脸"
+                                        
+                                        // 1. 确定视觉上的宽高（旋转后的预览布局宽高）
+                                        val isRotated = rotationDegrees == 90 || rotationDegrees == 270
+                                        val visualWidth = if (isRotated) imageHeight else imageWidth
+                                        val visualHeight = if (isRotated) imageWidth else imageHeight
+                                        
+                                        // 自动抓拍核心逻辑：
+                                        // A. 正脸判定 (角度 < 10)
+                                        // B. 面积占比判定 (> 30%)
+                                        val faceArea = face.boundingBox.width() * face.boundingBox.height()
+                                        val totalArea = visualWidth * visualHeight
+                                        val areaRatio = faceArea.toFloat() / totalArea.toFloat()
+                                        
+                                        if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10 && areaRatio > 0.1) {
+                                            val currentTime = System.currentTimeMillis()
+                                            if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
+                                                // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
+                                                latestFaceBoundingBox = RectF(face.boundingBox)
+                                                latestImageWidth = visualWidth
+                                                latestImageHeight = visualHeight
+                                                latestRotationDegrees = rotationDegrees
+                                                
+                                                onFrontFaceDetected()
+                                            }
+                                        }
                                     } else {
                                         faceStatusTextView.text = statusList.joinToString(", ")
                                     }
@@ -201,19 +242,15 @@ class MainActivity : AppCompatActivity() {
                                         mappedRect.right = right
                                     }
                                     
-                                    // 6. 水平方向收缩 15%，使其更贴合面部而不是整个头部（包括耳朵）
+                                    // 6. 扩张范围以覆盖整个头部 (比界面显示更宽，确保不丢耳朵/额头)
                                     val width = mappedRect.width()
-                                    val centerX = mappedRect.centerX()
-                                    val shrunkWidth = width * 0.85f
-                                    mappedRect.left = centerX - shrunkWidth / 2f
-                                    mappedRect.right = centerX + shrunkWidth / 2f
+                                    val height = mappedRect.height()
                                     
-                                    // 7. 使用极紧凑的边距（仅上方保留 10 像素以覆盖发际线）
                                     val finalRect = RectF(
-                                        mappedRect.left,
-                                        mappedRect.top - 10,
-                                        mappedRect.right,
-                                        mappedRect.bottom
+                                        mappedRect.left, //- width * 0.10f,  // 左右各扩 10%
+                                        mappedRect.top - height * 0.20f,  // 顶部向上扩 20% (头发)
+                                        mappedRect.right, //+ width * 0.10f,
+                                        mappedRect.bottom //+ height * 0.10f // 底部向下扩 10% (脖子)
                                     )
                                     
                                     overlayView.setFaceRect(finalRect)
@@ -261,48 +298,124 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
     
+    private fun onFrontFaceDetected() {
+        Log.d(TAG, "检测到正脸，触发开发者回调")
+        // 开发者可在此处处理自定义逻辑
+        captureFaceImage()
+    }
+    
     private fun captureFaceImage() {
         val imageCapture = imageCapture ?: return
+        if (isCapturing) return
         
-        val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
-            .format(System.currentTimeMillis())
-        val file = File(
-            getExternalFilesDir(Environment.DIRECTORY_PICTURES),
-            "face_${name}.jpg"
+        // 如果没有保存的人脸框（例如手动点击时可能没来得及分析），则暂时不抓取或抓取全图
+        // 这里为了安全性，如果是自动触发，latestFaceBoundingBox 肯定有值
+        
+        isCapturing = true
+        
+        imageCapture.takePicture(
+            cameraExecutor,
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    processAndSaveCapturedImage(image)
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    Log.e(TAG, "照片捕获失败: ${exception.message}", exception)
+                    isCapturing = false
+                    lastCaptureTime = System.currentTimeMillis()
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "拍照失败: ${exception.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         )
-        
-        val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
-        
-        val imageSavedCallback = object : ImageCapture.OnImageSavedCallback {
-            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                val savedUri = output.savedUri ?: file.toURI()
-                Log.d(TAG, "人脸照片已保存: ${savedUri}")
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "人脸照片已保存: ${file.absolutePath}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+    }
+
+    @OptIn(ExperimentalGetImage::class)
+    private fun processAndSaveCapturedImage(image: ImageProxy) {
+        try {
+            val rotationDegrees = image.imageInfo.rotationDegrees
+            val buffer = image.planes[0].buffer
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            
+            var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            
+            // 1. 处理 Bitmap 旋转（确保处于正确朝向）
+            if (rotationDegrees != 0) {
+                val matrix = Matrix()
+                matrix.postRotate(rotationDegrees.toFloat())
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            }
+
+            val currentFaceBox = latestFaceBoundingBox
+            val sourceWidth = latestImageWidth
+            val sourceHeight = latestImageHeight
+
+            if (currentFaceBox != null && sourceWidth > 0 && sourceHeight > 0) {
+                // 2. 将分析时的坐标转换到照片的坐标系
+                val scale = bitmap.width.toFloat() / sourceWidth.toFloat()
+                
+                val mappedRect = RectF(
+                    currentFaceBox.left * scale,
+                    currentFaceBox.top * scale,
+                    currentFaceBox.right * scale,
+                    currentFaceBox.bottom * scale
+                )
+
+                // 3. 应用相同的扩张逻辑（包含整个头部）
+                val w = mappedRect.width()
+                val h = mappedRect.height()
+                
+                val cropRect = RectF(
+                    mappedRect.left - w * 0.20f,
+                    mappedRect.top - h * 0.60f,
+                    mappedRect.right + w * 0.20f,
+                    mappedRect.bottom + h * 0.10f
+                )
+
+                // 4. 边界检查
+                val finalRect = Rect(
+                    kotlin.math.max(0, cropRect.left.toInt()),
+                    kotlin.math.max(0, cropRect.top.toInt()),
+                    kotlin.math.min(bitmap.width, cropRect.right.toInt()),
+                    kotlin.math.min(bitmap.height, cropRect.bottom.toInt())
+                )
+
+                // 5. 执行裁剪
+                if (finalRect.width() > 0 && finalRect.height() > 0) {
+                    bitmap = Bitmap.createBitmap(bitmap, finalRect.left, finalRect.top, finalRect.width(), finalRect.height())
                 }
             }
             
-            override fun onError(exception: ImageCaptureException) {
-                Log.e(TAG, "照片保存失败: ${exception.message}", exception)
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "人脸抓取失败: ${exception.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+            // 6. 如果是前置摄像头，对裁剪后的结果进行镜像（此时裁剪范围已定，不会错位）
+            if (!isBackCamera) {
+                val matrix = Matrix()
+                matrix.postScale(-1f, 1f)
+                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
             }
+
+            // 7. 保存到本地
+            val name = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis())
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "face_crop_${name}.jpg")
+            
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+
+            Log.d(TAG, "裁剪后的照片已保存: ${file.absolutePath}")
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "人脸已抓取 (仅头部): ${file.name}", Toast.LENGTH_SHORT).show()
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "处理保存照片失败", e)
+        } finally {
+            image.close()
+            isCapturing = false
+            lastCaptureTime = System.currentTimeMillis()
         }
-        
-        imageCapture.takePicture(
-            outputOptions,
-            cameraExecutor,
-            imageSavedCallback
-        )
     }
     
     private fun switchCamera() {
