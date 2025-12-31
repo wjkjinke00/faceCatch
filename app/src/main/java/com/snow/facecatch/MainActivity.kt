@@ -70,6 +70,7 @@ class MainActivity : AppCompatActivity() {
     private var latestImageWidth = 0
     private var latestImageHeight = 0
     private var latestRotationDegrees = 0
+    private var latestEulerZ = 0f // 平面旋转角度
     
     companion object {
         private const val TAG = "MainActivity"
@@ -109,6 +110,9 @@ class MainActivity : AppCompatActivity() {
         
         // 初始化线程池
         cameraExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        
+        // 自动清理 1 小时前的旧照片
+        cleanupOldPhotos()
         
         // 设置抓取按钮点击事件
         captureButton.setOnClickListener {
@@ -201,33 +205,46 @@ class MainActivity : AppCompatActivity() {
                                         val areaRatio = faceArea.toFloat() / totalArea.toFloat()
                                         println("faceArea:${faceArea},totalArea:${totalArea},areaRatio:${areaRatio}")
 
+                                        // C. 睁眼检测 (左右眼概率均需 > 0.45)
+                                        val leftEyeOpen = face.leftEyeOpenProbability ?: 1.0f
+                                        val rightEyeOpen = face.rightEyeOpenProbability ?: 1.0f
+                                        val isEyesOpen = leftEyeOpen > 0.45f && rightEyeOpen > 0.45f
+
                                         if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10) {
                                             if (areaRatio > 0.08) {
-                                                val currentTime = System.currentTimeMillis()
-                                                
-                                                // 如果尚未开始计时，则记录起始时间
-                                                if (frontFaceHoldStartTime == 0L) {
-                                                    frontFaceHoldStartTime = currentTime
-                                                }
-                                                
-                                                val holdDuration = currentTime - frontFaceHoldStartTime
-                                                
-                                                if (holdDuration >= 800) {
-                                                    // 满足稳定持有 (由 1s 临时调优为 0.5s)
-                                                    if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
-                                                        // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
-                                                        latestFaceBoundingBox = RectF(face.boundingBox)
-                                                        latestImageWidth = visualWidth
-                                                        latestImageHeight = visualHeight
-                                                        latestRotationDegrees = rotationDegrees
-                                                        
-                                                        frontFaceHoldStartTime = 0L // 触发后重置
-                                                        onFrontFaceDetected()
+                                                if (isEyesOpen) {
+                                                    val currentTime = System.currentTimeMillis()
+                                                    
+                                                    // 如果尚未开始计时，则记录起始时间
+                                                    if (frontFaceHoldStartTime == 0L) {
+                                                        frontFaceHoldStartTime = currentTime
+                                                    }
+                                                    
+                                                    val holdDuration = currentTime - frontFaceHoldStartTime
+                                                    
+                                                    if (holdDuration >= 800) {
+                                                        // 满足稳定持有
+                                                        if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
+                                                            // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
+                                                            latestFaceBoundingBox = RectF(face.boundingBox)
+                                                            latestImageWidth = visualWidth
+                                                            latestImageHeight = visualHeight
+                                                            latestRotationDegrees = rotationDegrees
+                                                            latestEulerZ = face.headEulerAngleZ // 记录倾斜角
+                                                            
+                                                            frontFaceHoldStartTime = 0L // 触发后重置
+                                                            onFrontFaceDetected()
+                                                        }
+                                                    } else {
+                                                        // 正在稳定计时中
+                                                        guidanceTextView.text = "保持住..."
+                                                        guidanceTextView.setTextColor(Color.CYAN)
                                                     }
                                                 } else {
-                                                    // 正在稳定计时中
-                                                    guidanceTextView.text = "保持住..."
-                                                    guidanceTextView.setTextColor(Color.CYAN)
+                                                    // 检测到眨眼或闭眼
+                                                    guidanceTextView.text = "请睁开眼睛"
+                                                    guidanceTextView.setTextColor(Color.parseColor("#FF9800")) // 橙色提示
+                                                    frontFaceHoldStartTime = 0L
                                                 }
                                             } else {
                                                 // 正脸但离得太远
@@ -403,11 +420,15 @@ class MainActivity : AppCompatActivity() {
             
             var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             
-            // 1. 处理 Bitmap 旋转（确保处于正确朝向）
+            // 1. 处理摄像头自身的物理旋转
             if (rotationDegrees != 0) {
                 val matrix = Matrix()
                 matrix.postRotate(rotationDegrees.toFloat())
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (rotatedBitmap != bitmap) {
+                    bitmap.recycle()
+                    bitmap = rotatedBitmap
+                }
             }
 
             val currentFaceBox = latestFaceBoundingBox
@@ -415,7 +436,7 @@ class MainActivity : AppCompatActivity() {
             val sourceHeight = latestImageHeight
 
             if (currentFaceBox != null && sourceWidth > 0 && sourceHeight > 0) {
-                // 2. 将分析时的坐标转换到照片的坐标系
+                // 2. 坐标转换：分析时的坐标 -> 旋转后照片的坐标
                 val scale = bitmap.width.toFloat() / sourceWidth.toFloat()
                 
                 val mappedRect = RectF(
@@ -425,18 +446,18 @@ class MainActivity : AppCompatActivity() {
                     currentFaceBox.bottom * scale
                 )
 
-                // 3. 应用相同的扩张逻辑（包含整个头部）
+                // 3. 应用头部分割扩张逻辑（为旋转纠偏预留足够空间）
                 val w = mappedRect.width()
                 val h = mappedRect.height()
                 
+                // 增大冗余量（Expansion + Padding），防止旋转后边角丢失
                 val cropRect = RectF(
-                    mappedRect.left - w * 0.20f,
-                    mappedRect.top - h * 0.60f,
-                    mappedRect.right + w * 0.20f,
-                    mappedRect.bottom + h * 0.10f
+                    mappedRect.left - w * 0.40f,
+                    mappedRect.top - h * 0.80f,
+                    mappedRect.right + w * 0.40f,
+                    mappedRect.bottom + h * 0.30f
                 )
 
-                // 4. 边界检查
                 val finalRect = Rect(
                     kotlin.math.max(0, cropRect.left.toInt()),
                     kotlin.math.max(0, cropRect.top.toInt()),
@@ -444,17 +465,34 @@ class MainActivity : AppCompatActivity() {
                     kotlin.math.min(bitmap.height, cropRect.bottom.toInt())
                 )
 
-                // 5. 执行裁剪
+                // 4. 执行初始裁剪（获得正位的面部区域）
                 if (finalRect.width() > 0 && finalRect.height() > 0) {
-                    bitmap = Bitmap.createBitmap(bitmap, finalRect.left, finalRect.top, finalRect.width(), finalRect.height())
+                    val faceBitmap = Bitmap.createBitmap(bitmap, finalRect.left, finalRect.top, finalRect.width(), finalRect.height())
+                    bitmap.recycle() // 回收完整的大图
+                    bitmap = faceBitmap
+
+                    // 5. 对“人脸小图”进行 Z 轴纠偏旋转
+                    if (latestEulerZ != 0f) {
+                        val correctionMatrix = Matrix()
+                        correctionMatrix.postRotate(-latestEulerZ)
+                        val correctedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, correctionMatrix, true)
+                        if (correctedBitmap != bitmap) {
+                            bitmap.recycle()
+                            bitmap = correctedBitmap
+                        }
+                    }
                 }
             }
             
-            // 6. 如果是前置摄像头，对裁剪后的结果进行镜像（此时裁剪范围已定，不会错位）
+            // 6. 镜像处理（如果是前置摄像头）
             if (!isBackCamera) {
                 val matrix = Matrix()
                 matrix.postScale(-1f, 1f)
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                val mirroredBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                if (mirroredBitmap != bitmap) {
+                    bitmap.recycle()
+                    bitmap = mirroredBitmap
+                }
             }
 
             // 7. 保存到本地
@@ -608,6 +646,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    private fun cleanupOldPhotos() {
+        cameraExecutor.execute {
+            try {
+                val directory = getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return@execute
+                val currentTime = System.currentTimeMillis()
+                val oneHourInMs = 60 * 60 * 1000L
+                
+                val files = directory.listFiles()
+                var deletedCount = 0
+                
+                files?.forEach { file ->
+                    if (file.isFile && file.name.endsWith(".jpg")) {
+                        if (currentTime - file.lastModified() > oneHourInMs) {
+                            if (file.delete()) {
+                                deletedCount++
+                            }
+                        }
+                    }
+                }
+                
+                if (deletedCount > 0) {
+                    Log.d(TAG, "清理了 $deletedCount 张 1 小时前的旧照片")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "清理照片失败: ${e.message}")
+            }
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
