@@ -1,6 +1,7 @@
 package com.snow.facecatch
 
 import android.util.Log
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.common.InputImage
@@ -8,7 +9,7 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 
 class FaceDetectionAnalyzer(
-    // 返回人脸列表，图像缓冲区宽高，以及图像旋转角度
+    // 返回人脸列表，图像缓冲区宽高，以及图像旋转度
     private val onFaceDetected: (List<com.google.mlkit.vision.face.Face>, Int, Int, Int) -> Unit
 ) : ImageAnalysis.Analyzer {
     
@@ -26,6 +27,7 @@ class FaceDetectionAnalyzer(
     
     private val detector = FaceDetection.getClient(options)
     
+    @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
         val mediaImage = imageProxy.image
         if (mediaImage != null) {
