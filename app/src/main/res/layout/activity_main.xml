@@ -81,6 +81,23 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- 抓拍进度条 -->
+    <ProgressBar
+        android:id="@+id/captureProgressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:layout_marginBottom="8dp"
+        android:indeterminate="false"
+        android:max="100"
+        android:progress="0"
+        android:secondaryProgress="100"
+        android:progressDrawable="@drawable/circular_progress"
+        android:visibility="invisible"
+        app:layout_constraintBottom_toTopOf="@id/guidanceTextView"
+        app:layout_constraintStart_toStartOf="@id/guidanceTextView"
+        app:layout_constraintEnd_toEndOf="@id/guidanceTextView" />
+
     <!-- 引导语提示 -->
     <TextView
         android:id="@+id/guidanceTextView"

@@ -39,6 +39,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.view.ViewGroup
 import android.util.Size
+import android.view.View
+import android.widget.ProgressBar
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.camera.core.ResolutionInfo
 
@@ -51,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraTypeTextView: TextView
     private lateinit var faceStatusTextView: TextView
     private lateinit var guidanceTextView: TextView
+    private lateinit var captureProgressBar: ProgressBar
     private lateinit var cameraExecutor: java.util.concurrent.ExecutorService
     private var imageCapture: ImageCapture? = null
     private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -91,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         cameraTypeTextView = findViewById(R.id.cameraTypeTextView)
         faceStatusTextView = findViewById(R.id.faceStatusTextView)
         guidanceTextView = findViewById(R.id.guidanceTextView)
+        captureProgressBar = findViewById(R.id.captureProgressBar)
         
         // 强制使用 TextureView 模式以提高动态缩放稳定性并防止黑屏
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -224,6 +228,8 @@ class MainActivity : AppCompatActivity() {
                                                     
                                                     if (holdDuration >= 800) {
                                                         // 满足稳定持有
+                                                        captureProgressBar.visibility = View.INVISIBLE
+                                                        captureProgressBar.progress = 100
                                                         if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
                                                             // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
                                                             latestFaceBoundingBox = RectF(face.boundingBox)
@@ -239,30 +245,38 @@ class MainActivity : AppCompatActivity() {
                                                         // 正在稳定计时中
                                                         guidanceTextView.text = "保持住..."
                                                         guidanceTextView.setTextColor(Color.CYAN)
+                                                        
+                                                        // 更新进度条 (0 -> 100)
+                                                        captureProgressBar.visibility = View.VISIBLE
+                                                        captureProgressBar.progress = (holdDuration / 8).toInt()
                                                     }
                                                 } else {
                                                     // 检测到眨眼或闭眼
                                                     guidanceTextView.text = "请睁开眼睛"
                                                     guidanceTextView.setTextColor(Color.parseColor("#FF9800")) // 橙色提示
                                                     frontFaceHoldStartTime = 0L
+                                                    captureProgressBar.visibility = View.INVISIBLE
                                                 }
                                             } else {
                                                 // 正脸但离得太远
                                                 guidanceTextView.text = "请靠近一点"
                                                 guidanceTextView.setTextColor(Color.YELLOW)
                                                 frontFaceHoldStartTime = 0L
+                                                captureProgressBar.visibility = View.INVISIBLE
                                             }
                                         } else {
                                             // 姿态不正确，重置计时器
                                             guidanceTextView.text = "请正对着摄像头"
                                             guidanceTextView.setTextColor(Color.YELLOW)
                                             frontFaceHoldStartTime = 0L
+                                            captureProgressBar.visibility = View.INVISIBLE
                                         }
                                     } else {
                                         faceStatusTextView.text = statusList.joinToString(", ")
                                         guidanceTextView.text = "请正对着摄像头"
                                         guidanceTextView.setTextColor(Color.YELLOW)
                                         frontFaceHoldStartTime = 0L
+                                        captureProgressBar.visibility = View.INVISIBLE
                                     }
 
                                     val boundingBox = RectF(face.boundingBox)
@@ -318,6 +332,7 @@ class MainActivity : AppCompatActivity() {
                                     faceStatusTextView.text = "无检测"
                                     guidanceTextView.text = "寻找人脸中..."
                                     guidanceTextView.setTextColor(Color.parseColor("#FFEB3B"))
+                                    captureProgressBar.visibility = View.INVISIBLE
                                 }
                             }
                         })
