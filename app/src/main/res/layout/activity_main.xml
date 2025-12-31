@@ -81,4 +81,22 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- 引导语提示 -->
+    <TextView
+        android:id="@+id/guidanceTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:text="寻找人脸中..."
+        android:textColor="#FFEB3B"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:background="@drawable/textview_background"
+        android:paddingHorizontal="20dp"
+        android:paddingVertical="10dp"
+        android:elevation="4dp"
+        app:layout_constraintBottom_toBottomOf="@id/previewView"
+        app:layout_constraintStart_toStartOf="@id/previewView"
+        app:layout_constraintEnd_toEndOf="@id/previewView" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

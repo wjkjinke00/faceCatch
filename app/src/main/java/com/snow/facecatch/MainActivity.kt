@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchCameraButton: FloatingActionButton
     private lateinit var cameraTypeTextView: TextView
     private lateinit var faceStatusTextView: TextView
+    private lateinit var guidanceTextView: TextView
     private lateinit var cameraExecutor: java.util.concurrent.ExecutorService
     private var imageCapture: ImageCapture? = null
     private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -62,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var isCapturing = false
     private var lastCaptureTime = 0L
     private val CAPTURE_COOLDOWN = 5000L // 5秒冷却时间
+    private var frontFaceHoldStartTime = 0L // 正脸开始持有的时间
     
     // 用于裁剪的状态
     private var latestFaceBoundingBox: RectF? = null
@@ -87,6 +89,7 @@ class MainActivity : AppCompatActivity() {
         switchCameraButton = findViewById(R.id.switchCameraButton)
         cameraTypeTextView = findViewById(R.id.cameraTypeTextView)
         faceStatusTextView = findViewById(R.id.faceStatusTextView)
+        guidanceTextView = findViewById(R.id.guidanceTextView)
         
         // 强制使用 TextureView 模式以提高动态缩放稳定性并防止黑屏
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -168,10 +171,8 @@ class MainActivity : AppCompatActivity() {
                                     val statusList = mutableListOf<String>()
                                     
                                     // 根据偏航角判断左右 (镜像处理交由 UI 显示逻辑)
-                                    if (eulerY > 15) {
-                                        statusList.add("右侧脸")
-                                    } else if (eulerY < -15) {
-                                        statusList.add("左侧脸")
+                                    if (eulerY > 15|| eulerY < -15) {
+                                        statusList.add("侧脸")
                                     }
                                     
                                     // 根据仰俯角判断上下
@@ -191,26 +192,57 @@ class MainActivity : AppCompatActivity() {
                                         
                                         // 自动抓拍核心逻辑：
                                         // A. 正脸判定 (角度 < 10)
-                                        // B. 面积占比判定 (> 30%)
+                                        // B. 面积占比判定 (> 8%)
                                         val faceArea = face.boundingBox.width() * face.boundingBox.height()
                                         val totalArea = visualWidth * visualHeight
                                         val areaRatio = faceArea.toFloat() / totalArea.toFloat()
                                         println("faceArea:${faceArea},totalArea:${totalArea},areaRatio:${areaRatio}")
 
-                                        if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10 && areaRatio > 0.085) {
-                                            val currentTime = System.currentTimeMillis()
-                                            if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
-                                                // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
-                                                latestFaceBoundingBox = RectF(face.boundingBox)
-                                                latestImageWidth = visualWidth
-                                                latestImageHeight = visualHeight
-                                                latestRotationDegrees = rotationDegrees
+                                        if (kotlin.math.abs(eulerX) < 10 && kotlin.math.abs(eulerY) < 10) {
+                                            if (areaRatio > 0.08) {
+                                                val currentTime = System.currentTimeMillis()
                                                 
-                                                onFrontFaceDetected()
+                                                // 如果尚未开始计时，则记录起始时间
+                                                if (frontFaceHoldStartTime == 0L) {
+                                                    frontFaceHoldStartTime = currentTime
+                                                }
+                                                
+                                                val holdDuration = currentTime - frontFaceHoldStartTime
+                                                
+                                                if (holdDuration >= 500) {
+                                                    // 满足稳定持有 (由 1s 临时调优为 0.5s)
+                                                    if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
+                                                        // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
+                                                        latestFaceBoundingBox = RectF(face.boundingBox)
+                                                        latestImageWidth = visualWidth
+                                                        latestImageHeight = visualHeight
+                                                        latestRotationDegrees = rotationDegrees
+                                                        
+                                                        frontFaceHoldStartTime = 0L // 触发后重置
+                                                        onFrontFaceDetected()
+                                                    }
+                                                } else {
+                                                    // 正在稳定计时中
+                                                    guidanceTextView.text = "保持住..."
+                                                    guidanceTextView.setTextColor(Color.CYAN)
+                                                }
+                                            } else {
+                                                // 正脸但离得太远
+                                                guidanceTextView.text = "请靠近一点"
+                                                guidanceTextView.setTextColor(Color.YELLOW)
+                                                frontFaceHoldStartTime = 0L
                                             }
+                                        } else {
+                                            // 姿态不正确，重置计时器
+                                            guidanceTextView.text = "请正对着摄像头"
+                                            guidanceTextView.setTextColor(Color.YELLOW)
+                                            frontFaceHoldStartTime = 0L
                                         }
                                     } else {
                                         faceStatusTextView.text = statusList.joinToString(", ")
+                                        guidanceTextView.text = "请正对着摄像头"
+                                        guidanceTextView.setTextColor(Color.YELLOW)
+                                        frontFaceHoldStartTime = 0L
                                     }
 
                                     val boundingBox = RectF(face.boundingBox)
@@ -264,6 +296,8 @@ class MainActivity : AppCompatActivity() {
                                 } else {
                                     overlayView.setFaceRect(null)
                                     faceStatusTextView.text = "无检测"
+                                    guidanceTextView.text = "寻找人脸中..."
+                                    guidanceTextView.setTextColor(Color.parseColor("#FFEB3B"))
                                 }
                             }
                         })
