@@ -37,7 +37,10 @@ import android.graphics.Rect
 import androidx.camera.core.ExperimentalGetImage
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Canvas
+import android.view.ViewGroup
+import android.util.Size
+import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.camera.core.ResolutionInfo
 
 class MainActivity : AppCompatActivity() {
     
@@ -84,6 +87,9 @@ class MainActivity : AppCompatActivity() {
         switchCameraButton = findViewById(R.id.switchCameraButton)
         cameraTypeTextView = findViewById(R.id.cameraTypeTextView)
         faceStatusTextView = findViewById(R.id.faceStatusTextView)
+        
+        // 强制使用 TextureView 模式以提高动态缩放稳定性并防止黑屏
+        previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         
         // 从 SharedPreferences 读取已选择的摄像头 ID
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -137,16 +143,16 @@ class MainActivity : AppCompatActivity() {
 
                 // 预览用例
                 val preview = Preview.Builder()
-                    .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
+                    .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
                     .build()
                     .also {
                         it.setSurfaceProvider(previewView.surfaceProvider)
                     }
-                
+
                 // 图像分析用例（用于人脸检测）
                 val imageAnalyzer = ImageAnalysis.Builder()
-                    .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
-                    .setTargetRotation(previewView.display.rotation)
+                    .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+                    .setTargetRotation(windowManager.defaultDisplay.rotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also {
@@ -264,17 +270,34 @@ class MainActivity : AppCompatActivity() {
                 
                 // 图像捕获用例
                 imageCapture = ImageCapture.Builder()
+                    .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
                 
                 try {
                     // 解绑之前的用例
                     cameraProvider.unbindAll()
+                    Log.d(TAG, "正在绑定用例至生命周期...")
                     
                     // 绑定预览、图像分析和图像捕获用例
                     cameraProvider.bindToLifecycle(
                         this, currentCameraSelector, preview, imageAnalyzer, imageCapture!!
                     )
+                    Log.d(TAG, "用例绑定成功")
+
+                    // 绑定后尝试获取分辨率并调整预览大小
+                    Log.d(TAG, "尝试获取分辨率信息...")
+                    val resInfo = preview.resolutionInfo
+                    if (resInfo != null) {
+                        adjustPreviewViewSize(resInfo.resolution, resInfo.rotationDegrees)
+                    } else {
+                        Log.w(TAG, "Preview resolutionInfo 为空，将在 post 中重试")
+                        previewView.post {
+                            preview.resolutionInfo?.let {
+                                adjustPreviewViewSize(it.resolution, it.rotationDegrees)
+                            }
+                        }
+                    }
                 } catch (exc: Exception) {
                     Log.e(TAG, "相机绑定失败: ${exc.message}", exc)
                     Toast.makeText(
@@ -463,6 +486,61 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             val facingText = if (isBackCamera) "后置" else "前置"
             cameraTypeTextView.text = "$facingText 摄像头 (ID: $selectedCameraId)"
+        }
+    }
+
+    private fun adjustPreviewViewSize(resolution: Size, rotationDegrees: Int) {
+        previewView.post {
+            try {
+                val isRotated = rotationDegrees == 90 || rotationDegrees == 270
+                val width = if (isRotated) resolution.height else resolution.width
+                val height = if (isRotated) resolution.width else resolution.height
+                
+                val ratio = width.toFloat() / height.toFloat()
+                
+                val parent = previewView.parent as? ViewGroup ?: return@post
+                val parentWidth = parent.width
+                val parentHeight = parent.height
+                
+                if (parentWidth <= 0 || parentHeight <= 0) {
+                    Log.w(TAG, "父容器尚未测量完成 (W:$parentWidth, H:$parentHeight)，50ms 后重试")
+                    previewView.postDelayed({
+                        adjustPreviewViewSize(resolution, rotationDegrees)
+                    }, 50)
+                    return@post
+                }
+                
+                // 【核心修复】必须为两个 View 分别创建不同的 LayoutParams 实例，严禁共享，否则 ConstraintLayout 会显示异常
+                val previewLp = previewView.layoutParams as ConstraintLayout.LayoutParams
+                val overlayLp = overlayView.layoutParams as ConstraintLayout.LayoutParams
+                
+                val screenRatio = parentWidth.toFloat() / parentHeight.toFloat()
+                
+                if (screenRatio > ratio) {
+                    // 屏幕比预览更宽，高度填满
+                    previewLp.height = parentHeight
+                    previewLp.width = (parentHeight * ratio).toInt()
+                } else {
+                    // 屏幕比预览更窄，宽度填满
+                    previewLp.width = parentWidth
+                    previewLp.height = (parentWidth / ratio).toInt()
+                }
+                
+                // 确保尺寸不为 0 (防止相机 Surface 创建失败)
+                if (previewLp.width <= 0) previewLp.width = 1
+                if (previewLp.height <= 0) previewLp.height = 1
+                
+                // 将 OverlayView 的尺寸同步给同样的值，但必须是独立赋值
+                overlayLp.width = previewLp.width
+                overlayLp.height = previewLp.height
+                
+                previewView.layoutParams = previewLp
+                overlayView.layoutParams = overlayLp 
+                
+                Log.d(TAG, "调整预览大小成功: ${previewLp.width}x${previewLp.height}, 比例: $ratio")
+            } catch (e: Exception) {
+                Log.e(TAG, "调整预览大小时出错: ${e.message}")
+            }
         }
     }
     
