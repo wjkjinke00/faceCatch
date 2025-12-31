@@ -421,6 +421,8 @@ class MainActivity : AppCompatActivity() {
             var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             
             // 1. 处理摄像头自身的物理旋转
+            Log.d(TAG, "开始处理抓拍图片: 摄像头旋转=$rotationDegrees, 人脸偏转=$latestEulerZ")
+            
             if (rotationDegrees != 0) {
                 val matrix = Matrix()
                 matrix.postRotate(rotationDegrees.toFloat())
@@ -430,6 +432,7 @@ class MainActivity : AppCompatActivity() {
                     bitmap = rotatedBitmap
                 }
             }
+            Log.d(TAG, "Step 1: 物理旋转完成, Bitmap尺寸=${bitmap.width}x${bitmap.height}")
 
             val currentFaceBox = latestFaceBoundingBox
             val sourceWidth = latestImageWidth
@@ -473,14 +476,18 @@ class MainActivity : AppCompatActivity() {
 
                     // 5. 对“人脸小图”进行 Z 轴纠偏旋转
                     if (latestEulerZ != 0f) {
+                        Log.d(TAG, "Step 5: 正在进行纠偏旋转, 角度=$latestEulerZ")
                         val correctionMatrix = Matrix()
-                        correctionMatrix.postRotate(-latestEulerZ)
+                        // 【关键修复】ML Kit 正值为逆时针，Android Matrix 正值为顺时针
+                        // 如果 head 向左歪(CCW, +)，则需要顺时针(+)旋转图像来纠正
+                        correctionMatrix.postRotate(latestEulerZ)
                         val correctedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, correctionMatrix, true)
                         if (correctedBitmap != bitmap) {
                             bitmap.recycle()
                             bitmap = correctedBitmap
                         }
                     }
+                    Log.d(TAG, "纠偏处理完成, 最终尺寸=${bitmap.width}x${bitmap.height}")
                 }
             }
             
