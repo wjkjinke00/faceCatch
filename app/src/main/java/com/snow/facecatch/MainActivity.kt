@@ -29,6 +29,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ExecutionException
+import androidx.appcompat.app.AlertDialog
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import android.content.Context
 
 class MainActivity : AppCompatActivity() {
     
@@ -37,10 +40,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var captureButton: FloatingActionButton
     private lateinit var switchCameraButton: FloatingActionButton
     private lateinit var cameraTypeTextView: TextView
+    private lateinit var faceStatusTextView: TextView
     private lateinit var cameraExecutor: java.util.concurrent.ExecutorService
     private var imageCapture: ImageCapture? = null
     private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
     private var isBackCamera = true
+    private var selectedCameraId: String? = null
+    
+    private val PREFS_NAME = "camera_settings"
+    private val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
     
     companion object {
         private const val TAG = "MainActivity"
@@ -59,6 +67,11 @@ class MainActivity : AppCompatActivity() {
         captureButton = findViewById(R.id.captureButton)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         cameraTypeTextView = findViewById(R.id.cameraTypeTextView)
+        faceStatusTextView = findViewById(R.id.faceStatusTextView)
+        
+        // 从 SharedPreferences 读取已选择的摄像头 ID
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        selectedCameraId = prefs.getString(KEY_SELECTED_CAMERA_ID, null)
         
         // 检查权限
         if (allPermissionsGranted()) {
@@ -90,6 +103,22 @@ class MainActivity : AppCompatActivity() {
             try {
                 val cameraProvider = cameraProviderFuture.get()
                 
+                // 根据 ID 选择摄像头，如果没有 ID 或找不到则默认后置
+                val availableCameras = cameraProvider.availableCameraInfos
+                val targetCameraInfo = availableCameras.find { 
+                    Camera2CameraInfo.from(it).cameraId == selectedCameraId 
+                } ?: availableCameras.firstOrNull { 
+                    it.lensFacing == CameraSelector.LENS_FACING_BACK 
+                } ?: availableCameras.firstOrNull()
+
+                if (targetCameraInfo != null) {
+                    currentCameraSelector = targetCameraInfo.cameraSelector
+                    isBackCamera = targetCameraInfo.lensFacing == CameraSelector.LENS_FACING_BACK
+                    selectedCameraId = Camera2CameraInfo.from(targetCameraInfo).cameraId
+                }
+
+                updateCameraTypeIndicator()
+
                 // 预览用例
                 val preview = Preview.Builder()
                     .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
@@ -109,6 +138,33 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (faces.isNotEmpty()) {
                                     val face = faces[0]
+                                    
+                                    // 计算并显示人脸状态
+                                    val eulerX = face.headEulerAngleX // 仰俯角 (正值向上)
+                                    val eulerY = face.headEulerAngleY // 偏航角 (正值向右)
+                                    
+                                    val statusList = mutableListOf<String>()
+                                    
+                                    // 根据偏航角判断左右 (镜像处理交由 UI 显示逻辑)
+                                    if (eulerY > 15) {
+                                        statusList.add("右侧脸")
+                                    } else if (eulerY < -15) {
+                                        statusList.add("左侧脸")
+                                    }
+                                    
+                                    // 根据仰俯角判断上下
+                                    if (eulerX > 15) {
+                                        statusList.add("抬头")
+                                    } else if (eulerX < -15) {
+                                        statusList.add("低头")
+                                    }
+                                    
+                                    if (statusList.isEmpty()) {
+                                        faceStatusTextView.text = "正脸"
+                                    } else {
+                                        faceStatusTextView.text = statusList.joinToString(", ")
+                                    }
+
                                     val boundingBox = RectF(face.boundingBox)
                                     
                                     val viewWidth = previewView.width
@@ -163,6 +219,7 @@ class MainActivity : AppCompatActivity() {
                                     overlayView.setFaceRect(finalRect)
                                 } else {
                                     overlayView.setFaceRect(null)
+                                    faceStatusTextView.text = "无检测"
                                 }
                             }
                         })
@@ -249,23 +306,50 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun switchCamera() {
-        isBackCamera = !isBackCamera
-        currentCameraSelector = if (isBackCamera) {
-            CameraSelector.DEFAULT_BACK_CAMERA
-        } else {
-            CameraSelector.DEFAULT_FRONT_CAMERA
-        }
-        
-        // 更新UI指示器
-        updateCameraTypeIndicator()
-        
-        // 重启摄像头
-        startCamera()
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            val cameraProvider = cameraProviderFuture.get()
+            val availableCameras = cameraProvider.availableCameraInfos
+            
+            val cameraItems = availableCameras.map { info ->
+                val id = Camera2CameraInfo.from(info).cameraId
+                val facing = when (info.lensFacing) {
+                    CameraSelector.LENS_FACING_BACK -> "后置"
+                    CameraSelector.LENS_FACING_FRONT -> "前置"
+                    CameraSelector.LENS_FACING_EXTERNAL -> "外置"
+                    else -> "未知"
+                }
+                "摄像头 $id ($facing)"
+            }.toTypedArray()
+
+            val currentIndex = availableCameras.indexOfFirst { 
+                Camera2CameraInfo.from(it).cameraId == selectedCameraId 
+            }.let { if (it == -1) 0 else it }
+
+            AlertDialog.Builder(this)
+                .setTitle("选择摄像头")
+                .setSingleChoiceItems(cameraItems, currentIndex) { dialog, which ->
+                    val selectedInfo = availableCameras[which]
+                    selectedCameraId = Camera2CameraInfo.from(selectedInfo).cameraId
+                    
+                    // 保存选择到 SharedPreferences
+                    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit()
+                        .putString(KEY_SELECTED_CAMERA_ID, selectedCameraId)
+                        .apply()
+
+                    dialog.dismiss()
+                    startCamera()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }, ContextCompat.getMainExecutor(this))
     }
     
     private fun updateCameraTypeIndicator() {
         runOnUiThread {
-            cameraTypeTextView.text = if (isBackCamera) "后置摄像头" else "前置摄像头"
+            val facingText = if (isBackCamera) "后置" else "前置"
+            cameraTypeTextView.text = "$facingText 摄像头 (ID: $selectedCameraId)"
         }
     }
     
