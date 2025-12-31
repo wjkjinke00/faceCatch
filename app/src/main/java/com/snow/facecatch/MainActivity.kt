@@ -162,7 +162,10 @@ class MainActivity : AppCompatActivity() {
                         it.setAnalyzer(cameraExecutor, FaceDetectionAnalyzer { faces, imageWidth, imageHeight, rotationDegrees ->
                             runOnUiThread {
                                 if (faces.isNotEmpty()) {
-                                    val face = faces[0]
+                                    // 选取画面中面积最大（离镜头最近）的人脸作为主目标
+                                    val face = faces.maxByOrNull { 
+                                        it.boundingBox.width() * it.boundingBox.height() 
+                                    } ?: faces[0]
                                     
                                     // 计算并显示人脸状态
                                     val eulerX = face.headEulerAngleX // 仰俯角 (正值向上)
@@ -209,7 +212,7 @@ class MainActivity : AppCompatActivity() {
                                                 
                                                 val holdDuration = currentTime - frontFaceHoldStartTime
                                                 
-                                                if (holdDuration >= 500) {
+                                                if (holdDuration >= 800) {
                                                     // 满足稳定持有 (由 1s 临时调优为 0.5s)
                                                     if (!isCapturing && (currentTime - lastCaptureTime > CAPTURE_COOLDOWN)) {
                                                         // 存储当前的人脸框和图像尺寸，供拍照完成后裁剪使用
