@@ -9,7 +9,7 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 
 class FaceDetectionAnalyzer(
-    // 返回人脸列表，图像缓冲区宽高，以及图像旋转度
+    // 返回人脸列表，图像缓冲区宽高，以及应用了 targetRotation 后的图像旋转度
     private val onFaceDetected: (List<com.google.mlkit.vision.face.Face>, Int, Int, Int) -> Unit
 ) : ImageAnalysis.Analyzer {
     

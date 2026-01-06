@@ -50,6 +50,7 @@ class FaceCatchFragment : Fragment() {
     
     private val PREFS_NAME = "camera_settings"
     private val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
+    private val KEY_CAMERA_ROTATION_OFFSET = "camera_rotation_offset_" // 后缀接 cameraId
     
     private var isCapturing = false
     private var lastCaptureTime = 0L
@@ -130,8 +131,25 @@ class FaceCatchFragment : Fragment() {
 
                 updateCameraTypeIndicator()
 
+                val prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val rotationOffset = prefs.getInt(KEY_CAMERA_ROTATION_OFFSET + selectedCameraId, 0)
+                
+                // 将 0, 90, 180, 270 角度转换为 Surface.ROTATION_* 
+                // CameraX 的 setTargetRotation 接受的是 Surface 旋转常量
+                // 默认通常是 Surface.ROTATION_0 (0). 
+                // 这里的逻辑需要根据设备默认方向和安装偏移来计算
+                // 为了简单起见，我们直接让用户选择最终想要的“显示方向”或者相对于默认的偏移
+                // 这里我们采用“直接指定目标旋转”的方式
+                val targetRotation = when (rotationOffset) {
+                    90 -> android.view.Surface.ROTATION_90
+                    180 -> android.view.Surface.ROTATION_180
+                    270 -> android.view.Surface.ROTATION_270
+                    else -> android.view.Surface.ROTATION_0
+                }
+
                 val preview = Preview.Builder()
                     .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                    .setTargetRotation(targetRotation)
                     .build()
                     .also {
                         it.setSurfaceProvider(previewView.surfaceProvider)
@@ -139,7 +157,7 @@ class FaceCatchFragment : Fragment() {
 
                 val imageAnalyzer = ImageAnalysis.Builder()
                     .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                    .setTargetRotation(requireActivity().windowManager.defaultDisplay.rotation)
+                    .setTargetRotation(targetRotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also {
@@ -152,6 +170,7 @@ class FaceCatchFragment : Fragment() {
 
                 imageCapture = ImageCapture.Builder()
                     .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                    .setTargetRotation(targetRotation)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
                 
@@ -407,14 +426,38 @@ class FaceCatchFragment : Fragment() {
             AlertDialog.Builder(requireContext())
                 .setTitle("选择摄像头")
                 .setSingleChoiceItems(cameraItems, currentIndex) { dialog, which ->
-                    selectedCameraId = Camera2CameraInfo.from(availableCameras[which]).cameraId
-                    requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_SELECTED_CAMERA_ID, selectedCameraId).apply()
+                    val newCameraId = Camera2CameraInfo.from(availableCameras[which]).cameraId
                     dialog.dismiss()
-                    startCamera()
+                    showRotationDialog(newCameraId)
                 }
                 .setNegativeButton("取消", null)
                 .show()
         }, ContextCompat.getMainExecutor(requireContext()))
+    }
+
+    private fun showRotationDialog(cameraId: String) {
+        val rotations = arrayOf("0° (默认)", "90°", "180°", "270°")
+        val rotationValues = intArrayOf(0, 90, 180, 270)
+        
+        val prefs = requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentRotation = prefs.getInt(KEY_CAMERA_ROTATION_OFFSET + cameraId, 0)
+        val currentIndex = rotationValues.indexOf(currentRotation).let { if (it == -1) 0 else it }
+
+        AlertDialog.Builder(requireContext())
+            .setTitle("调整旋转角度 (摄像头 $cameraId)")
+            .setSingleChoiceItems(rotations, currentIndex) { dialog, which ->
+                val selectedRotation = rotationValues[which]
+                selectedCameraId = cameraId
+                prefs.edit().apply {
+                    putString(KEY_SELECTED_CAMERA_ID, cameraId)
+                    putInt(KEY_CAMERA_ROTATION_OFFSET + cameraId, selectedRotation)
+                    apply()
+                }
+                dialog.dismiss()
+                startCamera()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun updateCameraTypeIndicator() {
